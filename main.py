@@ -4,24 +4,29 @@ import logging
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.client.default import DefaultBotProperties  # ← НОВОЕ
 from aiohttp import web
-from contextlib import suppress
 
 # Настройка логгера
 logging.basicConfig(level=logging.INFO)
 
-# Получаем переменные из окружения
+# Переменные окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "my-secret")
 BASE_URL = os.getenv("BASE_URL", "https://your-bot.onrender.com").rstrip("/")
 PORT = int(os.getenv("PORT", 8000))
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# ✅ Используем DefaultBotProperties
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ← ПРАВИЛЬНО
+)
+
 dp = Dispatcher()
 router = Router()
 
-# Глобальная переменная для хранения chat_id и счётчика
+# Глобальные переменные
 USER_CHAT_ID = None
 COUNTER = 0
 
@@ -32,11 +37,11 @@ async def handle_start(message: types.Message):
     await message.answer("✅ Бот запущен! Теперь я буду присылать числа каждые 10 минут.")
     logging.info(f"Chat ID сохранён: {USER_CHAT_ID}")
 
-# Фоновая задача — отправка чисел
+# Фоновая задача
 async def send_numbers_periodically():
     global COUNTER
     while True:
-        await asyncio.sleep(600)  # 10 минут = 600 секунд
+        await asyncio.sleep(600)  # 10 минут
         if USER_CHAT_ID is not None:
             COUNTER += 1
             try:
@@ -45,14 +50,12 @@ async def send_numbers_periodically():
             except Exception as e:
                 logging.error(f"Ошибка при отправке: {e}")
 
-# Запуск фоновой задачи при старте
+# События запуска/остановки
 async def on_startup(app):
-    # Устанавливаем вебхук
     await bot.set_webhook(
         f"{BASE_URL}{WEBHOOK_PATH}",
         secret_token=WEBHOOK_SECRET
     )
-    # Запускаем фоновую задачу
     asyncio.create_task(send_numbers_periodically())
 
 async def on_shutdown(app):
@@ -69,8 +72,8 @@ def main():
     webhook_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
-    app.on_startup.append(lambda app: on_startup(app))
-    app.on_shutdown.append(lambda app: on_shutdown(app))
+    app.on_startup.append(lambda _app: on_startup(_app))
+    app.on_shutdown.append(lambda _app: on_shutdown(_app))
 
     web.run_app(app, host="0.0.0.0", port=PORT)
 
