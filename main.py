@@ -1,28 +1,24 @@
 import asyncio
 import os
 import logging
-from aiogram import Bot, Dispatcher, Router, types
+from aiogram import Bot, Dispatcher, Router
+from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.client.default import DefaultBotProperties  # ← НОВОЕ
+from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
-# Настройка логгера
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Переменные окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "my-secret")
 BASE_URL = os.getenv("BASE_URL", "https://your-bot.onrender.com").rstrip("/")
-PORT = int(os.getenv("PORT", 8000))
+PORT = int(os.getenv("PORT", 10000))  # Render использует 10000 по умолчанию
 
-# ✅ Используем DefaultBotProperties
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ← ПРАВИЛЬНО
-)
-
+# Инициализация бота (aiogram ≥ 3.7.0)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
 
@@ -31,50 +27,51 @@ USER_CHAT_ID = None
 COUNTER = 0
 
 @router.message()
-async def handle_start(message: types.Message):
+async def handle_start(message: Message):
     global USER_CHAT_ID
     USER_CHAT_ID = message.chat.id
-    await message.answer("✅ Бот запущен! Теперь я буду присылать числа каждые 10 минут.")
-    logging.info(f"Chat ID сохранён: {USER_CHAT_ID}")
+    await message.answer("✅ Бот активирован! Первое число придет через 10 минут.")
+    logger.info(f"Chat ID сохранён: {USER_CHAT_ID}")
 
-# Фоновая задача
-async def send_numbers_periodically():
+# Эндпоинт для внешнего триггера (например, от UptimeRobot)
+async def tick_handler(request):
     global COUNTER
-    while True:
-        await asyncio.sleep(600)  # 10 минут
-        if USER_CHAT_ID is not None:
-            COUNTER += 1
-            try:
-                await bot.send_message(USER_CHAT_ID, str(COUNTER))
-                logging.info(f"Отправлено: {COUNTER}")
-            except Exception as e:
-                logging.error(f"Ошибка при отправке: {e}")
+    if USER_CHAT_ID is not None:
+        COUNTER += 1
+        try:
+            await bot.send_message(USER_CHAT_ID, str(COUNTER))
+            logger.info(f"Отправлено число: {COUNTER}")
+        except Exception as e:
+            logger.error(f"Ошибка отправки: {e}")
+    return web.json_response({"status": "ok", "counter": COUNTER})
 
-# События запуска/остановки
+# Установка вебхука при старте
 async def on_startup(app):
-    await bot.set_webhook(
-        f"{BASE_URL}{WEBHOOK_PATH}",
-        secret_token=WEBHOOK_SECRET
-    )
-    asyncio.create_task(send_numbers_periodically())
+    webhook_url = f"{BASE_URL}/webhook"
+    await bot.set_webhook(webhook_url)
+    logger.info(f"Вебхук установлен на: {webhook_url}")
 
+# Очистка при остановке
 async def on_shutdown(app):
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.session.close()
 
 def main():
     app = web.Application()
-    webhook_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=WEBHOOK_SECRET,
-    )
-    webhook_handler.register(app, path=WEBHOOK_PATH)
+
+    # Регистрация вебхука для Telegram
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path="/webhook")
+
+    # Добавляем эндпоинт /tick для внешнего запуска отправки
+    app.router.add_get("/tick", tick_handler)
+
+    # Подключаем события
     setup_application(app, dp, bot=bot)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
 
-    app.on_startup.append(lambda _app: on_startup(_app))
-    app.on_shutdown.append(lambda _app: on_shutdown(_app))
-
+    # Запуск сервера
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
